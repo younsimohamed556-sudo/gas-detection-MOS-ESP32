@@ -5,7 +5,6 @@
  * Accuracy : 95.13%   K=3   Features:6   Train:3451
  * EMA : montée α=0.6  descente α=0.4
  * Descente : seuil=4 lectures  delta=2.0
- * Robustesse : bruit σ=100 ADU + 10% label noise
  * Split train/test AVANT EMA — pas de data leakage
  */
 #ifndef KNN_GAZ_H
