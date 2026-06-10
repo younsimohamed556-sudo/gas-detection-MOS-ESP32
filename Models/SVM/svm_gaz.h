@@ -8,7 +8,6 @@
  * Stratégie  : OVO (One-vs-One, 6 classifieurs)
  * EMA : montée α=0.6  descente α=0.4
  * Descente : seuil=4 lectures  delta=2.0
- * Robustesse : bruit σ=100 ADU + 10% label noise
  * Split train/test AVANT EMA — pas de data leakage
  * Généré par TRAIN_SVM.PY
  */
