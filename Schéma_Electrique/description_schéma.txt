@@ -1,1 +1,33 @@
+DESCRIPTION DU SCHÉMA ÉLECTRIQUE
+=================================
 
+1. Bloc d'alimentation
+L'alimentation du système est assurée par deux batteries lithium 18650 
+associées à un convertisseur abaisseur LM2596 fournissant une tension 
+stable de 5 V nécessaire au fonctionnement des différents composants.
+
+2. Bloc de détection des gaz
+Il est constitué de quatre capteurs MOS : MQ2, MQ4, MQ7 et MQ135. 
+Chaque capteur est sensible à certains gaz tels que les gaz inflammables, 
+le méthane, le monoxyde de carbone et les gaz polluants. Les capteurs 
+génèrent des signaux analogiques proportionnels à la concentration des 
+gaz détectés. Des condensateurs de 1000 µF / 25 V ont été ajoutés pour 
+stabiliser l'alimentation des capteurs et améliorer la fiabilité des mesures.
+
+3. Bloc de conditionnement des signaux
+Chaque capteur est associé à des résistances formant un diviseur de tension 
+permettant d'adapter les signaux analogiques aux entrées ADC de l'ESP32. 
+Ce conditionnement améliore la qualité des signaux acquis.
+
+4. Bloc de traitement principal
+Le traitement des données est assuré par la carte ESP32. Elle réalise 
+l'acquisition des signaux, le prétraitement des données ainsi que 
+l'exécution des algorithmes de Machine Learning pour la détection des gaz.
+
+5. Bloc de mesure environnementale
+Un capteur AHT21 est utilisé pour mesurer la température et l'humidité 
+ambiantes, auxquelles des capteurs MOS sont sensibles.
+
+6. Bloc d'affichage et de communication
+Les informations obtenues sont affichées sur un écran LCD 16×2 connecté 
+à l'interface I2C utilisant les lignes SDA et SCL.
