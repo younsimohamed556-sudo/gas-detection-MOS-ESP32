@@ -28,13 +28,6 @@ II. FILTRAGE ET NETTOYAGE
   Outliers supprimés (IQR×3) : 242
   Dataset nettoyé            : 4314 lignes
 
-============================================================
-II-b. SIMULATION CONDITIONS RÉELLES
-============================================================
-  Bruit gaussien σ=100 ADU (vieillissement capteur)
-  Erreurs d'étiquetage : 10% (transitions floues entre gaz)
-  → Objectif : accuracy réaliste < 100%
-  431 étiquettes modifiées sur 4314
 
 ============================================================
 III. SPLIT TRAIN / TEST (avant EMA et features)
@@ -62,7 +55,7 @@ V. NORMALISATION Z-SCORE
 VI. ENTRAÎNEMENT SVM  (kernel=rbf, C=10.0, gamma=scale)
 ============================================================
   Vecteurs de support : 393  (11.4% du train)
-  Temps : 0.645 s
+  Temps : 0.874 s
 
 ============================================================
 VII. ÉVALUATION
@@ -89,6 +82,9 @@ IX. GÉNÉRATION svm_gaz.h
   svm_gaz.h ✓  (56 Ko)
   Vecteurs de support exportés : 393
   Accuracy   : 95.60%
-  Temps train : 0.645 s
+  Temps train : 0.34 s
   Kernel     : rbf  C=10.0  γ=0.166667
 ============================================================
+  svm_courbes_apprentissage_validation.png ✓
+============================================================
+
