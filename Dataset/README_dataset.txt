@@ -10,5 +10,5 @@ Description :
 - Parametres environnementaux : Temperature, Humidite
 - Format : CSV (valeurs 12 bits ADC, 0 a 4095)
 
-Note : Le fichier feeds.csv n'est pas inclus dans ce depot.
-Telechargez-le directement depuis le lien ThingSpeak ci-dessus.
+Note : Le fichier feeds.csv est inclus dans ce depot.
+Ou bien telechargez-le directement depuis le lien ThingSpeak ci-dessus.
