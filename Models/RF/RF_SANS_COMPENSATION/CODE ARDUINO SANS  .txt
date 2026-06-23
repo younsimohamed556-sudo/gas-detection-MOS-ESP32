@@ -1,0 +1,279 @@
+/*
+ * Ajout : capteur de température/humidité AHT21 sur le même bus I2C
+ * (SDA=GPIO21, SCL=GPIO22), partagé avec le LCD (adresses différentes :
+ * LCD=0x27, AHT21=0x38 → pas de conflit).
+ *
+ * Bibliothèque requise en plus : Adafruit_AHTX0 (gère AHT10/AHT20/AHT21)
+ */
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_AHTX0.h>
+#include <string.h>
+#include "rf_gaz.h"
+
+// ── Broches ──────────────────────────────────────────────────────
+#define PIN_MQ2    34
+#define PIN_MQ4    35
+#define PIN_MQ7    32
+#define PIN_MQ135  33
+#define SDA_PIN    21
+#define SCL_PIN    22
+
+// ── Timing ───────────────────────────────────────────────────────
+#define INTERVAL_MS  1500
+#define WARMUP_MS    3000UL
+
+// ── Filtre majoritaire (lissage affichage) ───────────────────────
+#define VOTE_WINDOW  5
+
+// ── Baselines air pur (affichage delta uniquement) ───────────────
+#define RF_MQ2_BASE    400.0f
+#define RF_MQ4_BASE      0.0f
+#define RF_MQ7_BASE    369.0f
+#define RF_MQ135_BASE  312.0f
+
+// ── Objets I2C ──────────────────────────────────────────────────────
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Adafruit_AHTX0 aht;
+bool aht_ok = false;
+
+// ── Buffer filtre majoritaire ─────────────────────────────────────
+static int     _vote_buf[VOTE_WINDOW] = {0};
+static uint8_t _vote_idx  = 0;
+static bool    _vote_full = false;
+
+// ── Prototypes ─────────────────────────────────────────────────────
+float lire_adc(uint8_t pin);
+int   filtre_majoritaire(int classe);
+void  afficher_bandeau();
+void  afficher_lcd(int classe, float temp, float hum);
+void  afficher_serie(float mq2, float mq4, float mq7, float mq135, float temp, float hum, int classe);
+bool  lire_th(float &temp, float &hum);
+
+static void reset_vote() {
+  for (int i = 0; i < VOTE_WINDOW; i++) _vote_buf[i] = 0;
+  _vote_idx  = 0;
+  _vote_full = false;
+}
+
+// ════════════════════════════════════════════════════════════════
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  // ── LCD 16x2 I2C ───────────────────────────────────────────────
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("  Gaz Detector  ");
+  lcd.setCursor(0, 1);
+  lcd.print(" Initialisation ");
+  delay(2000);
+
+  // ── AHT21 (Temp/Hum) sur le même bus I2C ─────────────────────────
+  aht_ok = aht.begin();
+  if (!aht_ok) {
+    Serial.println(F("[ERREUR] AHT21 non détecté sur le bus I2C !"));
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("AHT21 ERREUR !");
+    delay(2000);
+  } else {
+    Serial.println(F("[OK] AHT21 détecté."));
+  }
+
+  analogSetAttenuation(ADC_11db);
+  analogReadResolution(12);
+
+  rf_reset();
+  reset_vote();
+
+  afficher_bandeau();
+
+  // ── Préchauffage capteurs MOS ────────────────────────────────────
+  Serial.println(F("[INFO] Préchauffage 30 s en cours..."));
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Prechauffage...");
+
+  unsigned long t0 = millis();
+  uint8_t tick = 0;
+  while (millis() - t0 < WARMUP_MS) {
+    delay(1000);
+    tick++;
+    Serial.print(tick);
+    Serial.print(F("s "));
+
+    lcd.setCursor(0, 1);
+    lcd.print("Reste: ");
+    lcd.print(30 - tick);
+    lcd.print(" s   ");
+  }
+
+  Serial.println(F("\n[OK] Préchauffage terminé — démarrage classification"));
+  Serial.println();
+
+  rf_reset();
+  reset_vote();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("  Systeme pret  ");
+  lcd.setCursor(0, 1);
+  lcd.print(" Classification ");
+  delay(2000);
+  lcd.clear();
+}
+
+// ════════════════════════════════════════════════════════════════
+void loop() {
+  static unsigned long dernierTemps = 0;
+  unsigned long maintenant = millis();
+  if (maintenant - dernierTemps < INTERVAL_MS) return;
+  dernierTemps = maintenant;
+
+  float mq2   = lire_adc(PIN_MQ2);
+  float mq4   = lire_adc(PIN_MQ4);
+  float mq7   = lire_adc(PIN_MQ7);
+  float mq135 = lire_adc(PIN_MQ135);
+
+  float temp = 0.0f, hum = 0.0f;
+  lire_th(temp, hum);
+
+  // Si le modèle rf_gaz.h reste en 20 features (sans T/H), ces deux
+  // valeurs ne servent qu'à l'affichage : rf_predict() les ignore.
+  // Si tu repasses à un modèle 22 features (avec T/H), elles seront
+  // utilisées par le classifieur.
+  int classe = filtre_majoritaire(
+    rf_predict(mq2, mq4, mq7, mq135, temp, hum)
+  );
+
+  afficher_lcd(classe, temp, hum);
+  afficher_serie(mq2, mq4, mq7, mq135, temp, hum, classe);
+}
+
+// ════════════════════════════════════════════════════════════════
+bool lire_th(float &temp, float &hum) {
+  if (!aht_ok) return false;
+  sensors_event_t humEvt, tempEvt;
+  aht.getEvent(&humEvt, &tempEvt);
+  temp = tempEvt.temperature;
+  hum  = humEvt.relative_humidity;
+  return true;
+}
+
+// ════════════════════════════════════════════════════════════════
+float lire_adc(uint8_t pin) {
+  uint32_t somme = 0;
+  for (uint8_t i = 0; i < 16; i++) {
+    somme += analogRead(pin);
+    delayMicroseconds(100);
+  }
+  return (float)(somme >> 4);
+}
+
+// ════════════════════════════════════════════════════════════════
+int filtre_majoritaire(int classe) {
+  _vote_buf[_vote_idx] = classe;
+  _vote_idx = (_vote_idx + 1) % VOTE_WINDOW;
+  if (_vote_idx == 0) _vote_full = true;
+
+  int taille = _vote_full ? VOTE_WINDOW : _vote_idx;
+  int comptes[RF_N_CLASSES] = {0};
+  for (int i = 0; i < taille; i++) {
+    int c = _vote_buf[i];
+    if (c >= 0 && c < RF_N_CLASSES) comptes[c]++;
+  }
+  int best = 0;
+  for (int i = 1; i < RF_N_CLASSES; i++)
+    if (comptes[i] > comptes[best]) best = i;
+  return best;
+}
+
+// ════════════════════════════════════════════════════════════════
+void afficher_lcd(int classe, float temp, float hum) {
+  lcd.setCursor(0, 0);
+  char ligne0[17];
+  if (aht_ok) {
+    snprintf(ligne0, sizeof(ligne0), "T:%.1fC H:%.0f%%  ", temp, hum);
+  } else {
+    strcpy(ligne0, "Surveillance Gaz");
+  }
+  lcd.print(ligne0);
+
+  lcd.setCursor(0, 1);
+  switch (classe) {
+    case 0:  lcd.print("GAZ: Air Pur    "); break;
+    case 1:  lcd.print("! DANGER: CH4 ! "); break;
+    case 2:  lcd.print("! ALERTE: Fumee!"); break;
+    case 3:  lcd.print("! DANGER: CO !  "); break;
+    default: lcd.print("GAZ: Inconnu    "); break;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+void afficher_bandeau() {
+  Serial.println();
+  Serial.println(F("╔══════════════════════════════════════════════════════════╗"));
+  Serial.println(F("║   ESP32 — Surveillance Gaz RF + AHT21 (Temp/Hum)         ║"));
+  Serial.println(F("║   MQ2 | MQ4 | MQ7 | MQ135 | AHT21 | LCD 16x2             ║"));
+  Serial.println(F("║   Classes : Air Pur | CH4 | Fumée | CO                   ║"));
+  Serial.println(F("╚══════════════════════════════════════════════════════════╝"));
+  Serial.println();
+  Serial.println(F("ms       | MQ2  | MQ4  | MQ7  |MQ135 |Temp |Hum  | GAZ PRÉDIT"));
+  Serial.println(F("─────────────────────────────────────────────────────────────"));
+}
+
+// ════════════════════════════════════════════════════════════════
+void afficher_serie(float mq2, float mq4, float mq7, float mq135, float temp, float hum, int classe) {
+  const char* alerte;
+  switch (classe) {
+    case 0:  alerte = "  [OK]";                          break;
+    case 1:  alerte = "  [!] ATTENTION : CH4 detecte";  break;
+    case 2:  alerte = "  [!] ATTENTION : Fumee";         break;
+    case 3:  alerte = "  [!] DANGER    : CO detecte";    break;
+    default: alerte = "  [?]";                           break;
+  }
+
+  Serial.print(millis());
+  Serial.print(F(" | "));
+  Serial.print((int)mq2);
+  Serial.print(F(" | "));
+  Serial.print((int)mq4);
+  Serial.print(F(" | "));
+  Serial.print((int)mq7);
+  Serial.print(F(" | "));
+  Serial.print((int)mq135);
+  Serial.print(F(" | "));
+  Serial.print(temp, 1);
+  Serial.print(F(" | "));
+  Serial.print(hum, 0);
+  Serial.print(F(" | "));
+  Serial.print(rf_class_name(classe));
+  Serial.println(alerte);
+
+  static uint8_t compteur = 0;
+  if (++compteur >= 10) {
+    compteur = 0;
+    Serial.println();
+    Serial.println(F("┌──────────────── RÉSUMÉ ─────────────────────────┐"));
+    Serial.print(F("│  MQ2  (Fumée) : ")); Serial.print((int)mq2);
+    Serial.print(F("  [delta: ")); Serial.print(mq2 - RF_MQ2_BASE, 0); Serial.println(F("]"));
+    Serial.print(F("│  MQ4  (CH4)   : ")); Serial.print((int)mq4);
+    Serial.print(F("  [delta: ")); Serial.print(mq4 - RF_MQ4_BASE, 0); Serial.println(F("]"));
+    Serial.print(F("│  MQ7  (CO)    : ")); Serial.print((int)mq7);
+    Serial.print(F("  [delta: ")); Serial.print(mq7 - RF_MQ7_BASE, 0); Serial.println(F("]"));
+    Serial.print(F("│  MQ135        : ")); Serial.print((int)mq135);
+    Serial.print(F("  [delta: ")); Serial.print(mq135 - RF_MQ135_BASE, 0); Serial.println(F("]"));
+    Serial.print(F("│  Température  : ")); Serial.print(temp, 1); Serial.println(F(" °C"));
+    Serial.print(F("│  Humidité     : ")); Serial.print(hum, 0); Serial.println(F(" %"));
+    Serial.print(F("│  ► GAZ PRÉDIT : ")); Serial.print(rf_class_name(classe));
+    Serial.println(alerte);
+    Serial.println(F("└─────────────────────────────────────────────────┘"));
+    Serial.println();
+  }
+}
